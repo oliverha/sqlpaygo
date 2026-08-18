@@ -138,7 +138,7 @@ foreach ($server in $ServerList) {
         $extcommand = New-Object System.Data.SqlClient.SqlCommand($extsession, $connection)
         $extcommand.ExecuteNonQuery() | Out-Null
         $extsession = "
-        IF EXISTS (SELECT * FROM sys.server_event_sessions WHERE name = 'PAYGO')
+        IF EXISTS (SELECT * FROM sys.server_event_sessions WHERE name = 'PAYGO') AND NOT EXISTS (SELECT * FROM sys.server_event_sessions WHERE name = 'PAYGO' AND startup_state = 1)
         ALTER EVENT SESSION [PAYGO] ON SERVER STATE = START
         "
         $extcommand = New-Object System.Data.SqlClient.SqlCommand($extsession, $connection)

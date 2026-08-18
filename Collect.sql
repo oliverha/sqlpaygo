@@ -1,6 +1,6 @@
 SET QUOTED_IDENTIFIER ON
 SET NOCOUNT ON
-DECLARE @MaxRowsPerDB INT = 550 --- 2160
+DECLARE @MaxRowsPerDB INT = 2160
 DECLARE @NOW DATETIME2(7) = GETDATE()
 DECLARE @SQLSTARTTIME DATETIME2(7) = (SELECT sqlserver_start_time FROM sys.dm_os_sys_info)
 DECLARE @AssessmentStartDate DATETIME2(7) = (SELECT CAST([value] AS DATETIME2(7)) FROM msdb.sys.extended_properties WHERE name = 'PAYGO-Start')

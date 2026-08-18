@@ -53,6 +53,8 @@ BEGIN
 	SET @i = 0
 	WHILE @i < @BinLength
 	BEGIN
+
+		BEGIN TRY
 		SET @DBBinSet = SUBSTRING(@DBBinData, 16 + (@i*8)+1, 8)
 		SET @DBBinDate = SUBSTRING(@DBBinSet,1,4)
 		SET @ReadData = CAST(SUBSTRING(@DBBinSet,5,1) AS TINYINT)
@@ -81,6 +83,10 @@ BEGIN
 			(@DBBinFLags & @UpdStats),
 			(@DBBinFLags & @SimpleRM)
 		)
+		END TRY
+		BEGIN CATCH
+			PRINT 'Error: ' + CAST(ERROR_NUMBER() AS VARCHAR) + ' - ' + ERROR_MESSAGE()
+		END CATCH
 
 		SET @i = @i + 1
 	END
