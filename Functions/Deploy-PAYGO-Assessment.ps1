@@ -108,10 +108,14 @@ foreach ($server in $ServerList) {
             continue
         }
 
+        $IsClustered_check = "SELECT SERVERPROPERTY('IsClustered')"
+        $IsClusteredcommand = new-object system.data.sqlclient.sqlcommand($IsClustered_check,$connection)
+        $IsClustered = $IsClusteredcommand.ExecuteScalar()
+
         $Agent_check = "SELECT startup_type FROM sys.dm_server_services WHERE UPPER(filename) LIKE '%SQLAGENT.EXE%'"
         $Agentcommand = new-object system.data.sqlclient.sqlcommand($Agent_check,$connection)
         $AgentStartupType = $Agentcommand.ExecuteScalar()
-        if ($AgentStartupType -ne 2) {
+        if ($AgentStartupType -ne 2 -and $IsClustered -ne 1) {
             Write-Host "SQL Server Agent is not configured for automatic start. Skipping server $server ..."
             continue
         }
@@ -154,92 +158,57 @@ foreach ($server in $ServerList) {
         $extcommand = New-Object System.Data.SqlClient.SqlCommand($extproperty, $connection)
         $extcommand.ExecuteNonQuery() | Out-Null
 
-        $connection.Close()
-
         $script = Get-Content .\Collect.sql -Encoding UTF8 -Raw
         if (!($script)) {
             break
         }
       
         try {
-            [System.Reflection.Assembly]::LoadWithPartialName("Microsoft.SqlServer.Smo") | Out-Null
-            [System.Reflection.Assembly]::LoadWithPartialName("Microsoft.SqlServer.Management.Smo") | Out-Null
-        
             $JobName = $Global:JobName
-            # Create the job
-            $smo = New-Object -TypeName  Microsoft.SQLServer.Management.Smo.Server($server) #| Out-Null
-      
-            if (($smo.JobServer.Jobs | Select-Object -ExpandProperty Name)  -contains $JobName) {
-                $sqlJob = $smo.JobServer.Jobs | Where-Object { $_.Name -eq $JobName }
-                $sqlJob.OwnerLoginName = 'sa'
-                #$sqlJob.Category = "Database Maintenance"
-                $sqlJob.Description = "Source: $($Global:JobName) Assessment"
-                #$sqlJob.EmailLevel = [Microsoft.SqlServer.Management.Smo.Agent.CompletionAction]::OnFailure
-                #$sqlJob.PageLevel = [Microsoft.SqlServer.Management.Smo.Agent.CompletionAction]::OnFailure
-                #$sqlJob.EventLogLevel = [Microsoft.SqlServer.Management.Smo.Agent.CompletionAction]::OnFailure
+            $jobNameSafe = $JobName.Replace("'", "''")
+
+            $jobExistsQuery = "SELECT COUNT(*) FROM msdb.dbo.sysjobs WHERE name = N'$jobNameSafe'"
+            $jobExistsCommand = New-Object System.Data.SqlClient.SqlCommand($jobExistsQuery, $connection)
+            $jobExists = [int]$jobExistsCommand.ExecuteScalar()
+
+            if ($jobExists -gt 0) {
+                $deleteJob = "EXEC msdb.dbo.sp_delete_job @job_name = N'$jobNameSafe', @delete_unused_schedule = 1"
+                $deleteCommand = New-Object System.Data.SqlClient.SqlCommand($deleteJob, $connection)
+                $deleteCommand.ExecuteNonQuery() | Out-Null
             }
-            else {
-                $sqlJob = New-Object -TypeName Microsoft.SqlServer.Management.SMO.Agent.Job -argumentlist $smo.JobServer, $JobName #| Out-Null
-                $sqlJob.OwnerLoginName = 'sa'
-                $sqlJob.Create()
-                $sqlJob.ApplyToTargetServer("(local)")
-                #$sqlJob.Category = "Database Maintenance"
-                $sqlJob.Description = "Source: $($Global:JobName) Assessment"
-                #$sqlJob.EmailLevel = [Microsoft.SqlServer.Management.Smo.Agent.CompletionAction]::OnFailure
-                #$sqlJob.PageLevel = [Microsoft.SqlServer.Management.Smo.Agent.CompletionAction]::OnFailure
-                #$sqlJob.EventLogLevel = [Microsoft.SqlServer.Management.Smo.Agent.CompletionAction]::OnFailure
-            }
-      
-            # Setup the job step
-            if (($sqlJob.JobSteps | Select-Object -ExpandProperty Name) -contains $JobName) {
-                $sqlJobStep = $sqlJob.JobSteps | Where-Object { $_.Name -eq $JobName }
-                $sqlCommand = $script   
-                $sqlJobStep.SubSystem = "TransactSQL"
-                $sqlJobStep.DatabaseName = "msdb"
-                $sqlJobStep.Command = $sqlCommand
-                $sqlJobStep.Alter() 
-            }
-            else {
-                $sqlJobStep = New-Object -TypeName Microsoft.SqlServer.Management.SMO.Agent.JobStep -argumentlist $sqlJob, $JobName
-                $sqlCommand = $script   
-                $sqlJobStep.SubSystem = "TransactSQL"
-                $sqlJobStep.DatabaseName = "msdb"
-                $sqlJobStep.Command = $sqlCommand
-                $sqlJobStep.Create() 
-            }
-            $sqlJobStep.OnSuccessAction = [Microsoft.SqlServer.Management.Smo.Agent.StepCompletionAction]::QuitWithSuccess
-            $sqlJobStep.OnFailAction = [Microsoft.SqlServer.Management.Smo.Agent.StepCompletionAction]::QuitWithSuccess
-      
-            #Now add a schedule to our job to finish it off
-            if (($sqlJob.JobSchedules | Select-Object -ExpandProperty Name) -contains $JobName) {
-                $SQLJobSchedule = $sqlJob.JobSchedules | Where-Object { $_.Name -eq $JobName }
-                #Need to use the built in types for Frequency, in this case we'll run it every day
-                $SQLJobSchedule.FrequencyTypes =  [Microsoft.SqlServer.Management.SMO.Agent.FrequencyTypes]::Weekly
-                $SQLJobSchedule.FrequencyInterval = 127 #every day
-                $SQLJobSchedule.FrequencySubDayTypes = [Microsoft.SqlServer.Management.SMO.Agent.FrequencySubDayTypes]::Hour
-                $SQLJobSchedule.FrequencySubDayInterval = 1
-                $SQLJobSchedule.FrequencyRecurrenceFactor = 1
-                $SQLJobSchedule.ActiveStartTimeofDay = 0
-                
-                #Set the job to be active from now
-                $SQLJobSchedule.ActiveStartDate = get-date
-                $SQLJobSchedule.Alter()
-            } 
-            else {
-                $SQLJobSchedule =  New-Object -TypeName Microsoft.SqlServer.Management.SMO.Agent.JobSchedule -argumentlist $SQLJob, $JobName
-                #Need to use the built in types for Frequency, in this case we'll run it every day
-                $SQLJobSchedule.FrequencyTypes =  [Microsoft.SqlServer.Management.SMO.Agent.FrequencyTypes]::Weekly
-                $SQLJobSchedule.FrequencyInterval = 127 #every day
-                $SQLJobSchedule.FrequencySubDayTypes = [Microsoft.SqlServer.Management.SMO.Agent.FrequencySubDayTypes]::Hour
-                $SQLJobSchedule.FrequencySubDayInterval = 1
-                $SQLJobSchedule.FrequencyRecurrenceFactor = 1
-                $SQLJobSchedule.ActiveStartTimeofDay = 0
-                
-                #Set the job to be active from now
-                $SQLJobSchedule.ActiveStartDate = get-date
-                $SQLJobSchedule.Create()
-            }
-            $sqlJob.Alter()
+
+            $sqlCommand = $script.Replace("'", "''")
+            $createJob = @"
+EXEC msdb.dbo.sp_add_job
+    @job_name = N'$jobNameSafe',
+    @enabled = 1,
+    @description = N'Source: $JobName Assessment',
+    @owner_login_name = N'sa';
+
+EXEC msdb.dbo.sp_add_jobstep
+    @job_name = N'$jobNameSafe',
+    @step_name = N'$jobNameSafe',
+    @subsystem = N'TSQL',
+    @command = N'$sqlCommand',
+    @database_name = N'msdb',
+    @on_success_action = 1,
+    @on_fail_action = 1;
+
+EXEC msdb.dbo.sp_add_jobschedule
+    @job_name = N'$jobNameSafe',
+    @name = N'$jobNameSafe',
+    @enabled = 1,
+    @freq_type = 8,
+    @freq_interval = 127,
+    @freq_subday_type = 8,
+    @freq_subday_interval = 1,
+    @freq_recurrence_factor = 1,
+    @active_start_date = 19900101,
+    @active_start_time = 000000;
+"@
+
+            $jobCreateCommand = New-Object System.Data.SqlClient.SqlCommand($createJob, $connection)
+            $jobCreateCommand.ExecuteNonQuery() | Out-Null
         }
         catch {
             $ErrorString = $_ | format-list -force | Out-String

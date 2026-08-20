@@ -117,21 +117,38 @@ foreach ($server in $ServerList) {
         $extcommand.ExecuteNonQuery() | Out-Null
 
         $JobName = $Global:JobName
-        # Create the job
-        [System.Reflection.Assembly]::LoadWithPartialName("Microsoft.SqlServer.Smo") | Out-Null
-        [System.Reflection.Assembly]::LoadWithPartialName("Microsoft.SqlServer.Management.Smo") | Out-Null
-        $smo = New-Object -TypeName  Microsoft.SQLServer.Management.Smo.Server($server) #| Out-Null
-        if (($smo.JobServer.Jobs | Select-Object -ExpandProperty Name)  -contains $JobName) {
-            $sqlJob = $smo.JobServer.Jobs | Where-Object { $_.Name -eq $JobName }
-            $sqlJob.Drop();
-        }
-        $extprops = $smo.databases["msdb"].extendedproperties
-        foreach ($extprop in $extprops) {
-            if ($extprop.name.startswith("PAYGO" + ":") -or $extprop.name -eq "PAYGO-Start" -or $extprop.name -eq "PAYGO-LastRun") {
-                $extprop.MarkforDrop($true)
-            }
-        }
-        $smo.databases["msdb"].Alter()
+        $jobNameSafe = $JobName.Replace("'", "''")
+
+        $deleteJob = "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'$jobNameSafe') EXEC msdb.dbo.sp_delete_job @job_name = N'$jobNameSafe', @delete_unused_schedule = 1"
+        $deleteJobCommand = New-Object System.Data.SqlClient.SqlCommand($deleteJob, $connection)
+        $deleteJobCommand.ExecuteNonQuery() | Out-Null
+
+        $dropExtendedProperties = @"
+DECLARE @propName SYSNAME
+DECLARE prop_cursor CURSOR LOCAL FAST_FORWARD FOR
+    SELECT name
+    FROM msdb.sys.extended_properties
+    WHERE [name] LIKE 'PAYGO:%'
+       OR [name] IN ('PAYGO-Start', 'PAYGO-LastRun')
+
+OPEN prop_cursor
+FETCH NEXT FROM prop_cursor INTO @propName
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    EXEC msdb.sys.sp_dropextendedproperty
+        @name = @propName,
+        @level0type = N'DATABASE',
+        @level0name = N'msdb'
+
+    FETCH NEXT FROM prop_cursor INTO @propName
+END
+
+CLOSE prop_cursor
+DEALLOCATE prop_cursor
+"@
+        $dropExtendedPropertiesCommand = New-Object System.Data.SqlClient.SqlCommand($dropExtendedProperties, $connection)
+        $dropExtendedPropertiesCommand.ExecuteNonQuery() | Out-Null
 
         $connection.Close()
 
